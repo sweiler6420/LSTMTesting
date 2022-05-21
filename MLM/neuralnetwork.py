@@ -67,7 +67,7 @@ class NeuralNetwork():
         if input_csv is not None:
             self.df = pd.read_csv(self.input_csv)
             self.df_no_index = pd.read_csv(self.input_csv)
-            #self.df.set_index("Date", inplace=True, drop=True)
+            self.df.set_index("Date", inplace=True, drop=True)
             #self.df = self.df.filter(['Close'])
 
         if model_file_name is None:
@@ -144,12 +144,14 @@ class NeuralNetwork():
         batch_size: {int} -- The batch size to be used for the model compiler
         epochs {int} -- how many times the training data set should be traversed in training
         """
-        #print(self.x_train)
         # Compile the model before training
         self.model.compile(optimizer='adam', loss='mse')
+        # Scale the data for normalization (advantagious to preprocess the data for input data to a neural network)
+        x_scaled_data = self._scale_data(self.x_train)
+        y_scaled_data = self._scale_data(self.y_train)
         # Train the model
         #print(self.x_train)
-        self.history = self.model.fit(self.x_train, self.y_train, validation_data = (self.x_test, self.y_test), batch_size=batch_size, epochs=epochs, verbose=verbose, shuffle=True)
+        self.history = self.model.fit(x_scaled_data, y_scaled_data, validation_data = (self.x_test, self.y_test), batch_size=batch_size, epochs=epochs, verbose=verbose, shuffle=True)
 
     def normalize_data(self, y_column_name: List[str], lookback: int = 50, training_percent: float = 0.8):
         """
@@ -176,21 +178,17 @@ class NeuralNetwork():
         # Get the number of rows to train the model on and round up
         self.training_data_len = math.ceil(len(x_dataset) * training_percent)
 
-        # Scale the data for normalization (advantagious to preprocess the data for input data to a neural network)
-        x_scaled_data = self.scaler.fit_transform(x_dataset)
-        y_scaled_data = self.scaler.fit_transform(y_dataset)
-
         # Create the training dataset 
         # Create the scaled training data set
-        x_train_data = x_scaled_data[0:self.training_data_len, :]
-        y_train_data = y_scaled_data[0:self.training_data_len, :]
+        x_train_data = x_dataset[0:self.training_data_len, :]
+        y_train_data = y_dataset[0:self.training_data_len, :]
 
         # Transform the train data sets into normalized sets with sequences and the expected future y value
         self.x_train, self.y_train = self._create_train_arrays(x_train_data=x_train_data, y_train_data=y_train_data, lookback=self.lookback)       
 
         ############################### Create the testing data set#########################
         # Create a new array containing scaled values from the remaining input csv values
-        x_test_data = x_scaled_data[self.training_data_len - lookback: , :]
+        x_test_data = x_dataset[self.training_data_len - lookback: , :]
 
         # Create the data sets for x_test and y_test, convert them to numpy array and reshape them (same logic as _parse_sequence_array but for output)
         self.x_test, self.y_test = self._create_test_arrays(x_test_data=x_test_data, y_test_data=y_dataset, lookback=self.lookback)
@@ -199,16 +197,20 @@ class NeuralNetwork():
         """ 
         input the prediction test data and save the predictions after inverse scaling them
         """
+        # Scale the input data for the prediction, no need to scale y Test since it does not go into the model but the scaler object saves the last scaled array's shape
+        # So we must scale y data in order to save that shape for inverse scaling
+        x_test_scaled_data = self._scale_data(self.x_test)
+        y_test_scaled_data = self._scale_data(self.y_test)
         if input is None:
             # Get the models predicted price values
-            self.test_predictions = self.model.predict(self.x_test)
-            # Inverse scale the output predictions
-            self.test_predictions = self.scaler.inverse_transform(self.test_predictions)
+            self.test_predictions = self.model.predict(x_test_scaled_data)
         else:
+            x_test_scaled_data = self._scale_data(input)
             # Get the models predicted price values
-            self.test_predictions = self.model.predict(input)
-            # Inverse scale the output predictions
-            self.test_predictions = self.scaler.inverse_transform(self.test_predictions)
+            self.test_predictions = self.model.predict(x_test_scaled_data)
+            
+        # Inverse scale the output predictions
+        self.test_predictions = self.scaler.inverse_transform(self.test_predictions)
 
         return self.test_predictions
 
@@ -339,3 +341,13 @@ class NeuralNetwork():
             output_df = self.df.filter([[y_column_name[0], y_column_name[1], y_column_name[2], y_column_name[3]]])
         
         return output_df
+
+    def _scale_data(self, input):
+        if input.ndim >= 3:
+            nsamples, nx, ny = input.shape
+            reshaped_input = input.reshape((nsamples,nx*ny))
+            scaled_data = self.scaler.fit_transform(reshaped_input)
+            reshaped_scaled_data = scaled_data.reshape(nsamples,nx,ny)
+        else:
+            reshaped_scaled_data = self.scaler.fit_transform(input)
+        return reshaped_scaled_data
