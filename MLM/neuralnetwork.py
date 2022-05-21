@@ -6,7 +6,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 2 = INFO and WARNING messages are not printed
 3 = INFO, WARNING, and ERROR messages are not printed
 """
-
 import math
 from typing import List
 
@@ -48,6 +47,7 @@ class NeuralNetwork():
         self.y_train = []
         self.x_test = []
         self.y_test = []
+        self.rmse_history = pd.DataFrame()
         self.training_data_len = 0
         self.lookback = 0
         self.test_predictions = None
@@ -66,7 +66,9 @@ class NeuralNetwork():
 
         if input_csv is not None:
             self.df = pd.read_csv(self.input_csv)
-            self.df.set_index("Date", inplace=True, drop=True)
+            self.df_no_index = pd.read_csv(self.input_csv)
+            #self.df.set_index("Date", inplace=True, drop=True)
+            #self.df = self.df.filter(['Close'])
 
         if model_file_name is None:
             self._createmodel()
@@ -100,7 +102,7 @@ class NeuralNetwork():
         elif layer_type == "DENSE" or layer_type == "dense":
             self.model.add(Dense(neurons))
 
-    def train_model(self, batch_size: int = 1, epochs: int = 10):
+    def train_model_with_metrics(self, batch_size: int = 1, epochs: int = 10, verbose: int = 0):
         """
         Uses x_train and y_train arrays and trains the model
         Arguments:
@@ -110,11 +112,44 @@ class NeuralNetwork():
         """
         #print(self.x_train)
         # Compile the model before training
-        self.model.compile(optimizer='adam', loss='mse', metrics='accuracy')
+        self.model.compile(optimizer='adam', loss='mse')
         # Train the model
-        self.history = self.model.fit(self.x_train, self.y_train, validation_data = (self.x_test, self.y_test), batch_size=batch_size, epochs=epochs) #validation_data = (self.x_test, self.y_test),
-        _, self.test_accuracy = self.model.evaluate(self.x_test, self.y_test)
-        self.test_accuracy = round(self.test_accuracy,3)
+        train_rmse = []
+        test_rmse = []
+        for i in range(epochs):
+            self.model.fit(self.x_train, self.y_train, epochs=1, batch_size=batch_size, verbose=verbose)
+            #self.model.reset_states()
+            # evaluate model on train data
+            x_full_data = self.df_no_index.filter([self.y_column_name[0]])
+            x_train_data = x_full_data[:self.training_data_len]
+            x_train_data = x_train_data[self.lookback:]
+            x_test_data = x_full_data[self.training_data_len:]
+            #print(x_test_data.shape)
+            train = self.get_rmse(x_train_data, self.test_prediction(self.x_train))
+            train_rmse.append(train[0])
+            #self.model.reset_states()
+            # evaluate model on test data
+            train = self.get_rmse(x_test_data, self.test_prediction(self.x_test))
+            test_rmse.append(train[0])
+            #self.model.reset_states()
+        self.rmse_history['train'], self.rmse_history['test'] = train_rmse, test_rmse
+        return self.rmse_history
+        
+
+    def train_model(self, batch_size: int = 1, epochs: int = 10, verbose: int = 0):
+        """
+        Uses x_train and y_train arrays and trains the model
+        Arguments:
+        ----
+        batch_size: {int} -- The batch size to be used for the model compiler
+        epochs {int} -- how many times the training data set should be traversed in training
+        """
+        #print(self.x_train)
+        # Compile the model before training
+        self.model.compile(optimizer='adam', loss='mse')
+        # Train the model
+        #print(self.x_train)
+        self.history = self.model.fit(self.x_train, self.y_train, validation_data = (self.x_test, self.y_test), batch_size=batch_size, epochs=epochs, verbose=verbose, shuffle=True)
 
     def normalize_data(self, y_column_name: List[str], lookback: int = 50, training_percent: float = 0.8):
         """
@@ -160,22 +195,32 @@ class NeuralNetwork():
         # Create the data sets for x_test and y_test, convert them to numpy array and reshape them (same logic as _parse_sequence_array but for output)
         self.x_test, self.y_test = self._create_test_arrays(x_test_data=x_test_data, y_test_data=y_dataset, lookback=self.lookback)
 
-    def prediction_test(self):
+    def test_prediction(self, input = None):
         """ 
         input the prediction test data and save the predictions after inverse scaling them
         """
-        # Get the models predicted price values
-        self.test_predictions = self.model.predict(self.x_test)
-        # Inverse scale the output predictions
-        self.test_predictions = self.scaler.inverse_transform(self.test_predictions)
+        if input is None:
+            # Get the models predicted price values
+            self.test_predictions = self.model.predict(self.x_test)
+            # Inverse scale the output predictions
+            self.test_predictions = self.scaler.inverse_transform(self.test_predictions)
+        else:
+            # Get the models predicted price values
+            self.test_predictions = self.model.predict(input)
+            # Inverse scale the output predictions
+            self.test_predictions = self.scaler.inverse_transform(self.test_predictions)
+
         return self.test_predictions
 
-    def get_rmse(self) -> float:
+    def get_rmse(self, valid = None, preds = None) -> float:
         """ 
         calculate the Root Mean Squared Error and return that value
         """
         # Get the root mean squared error or RMSE
-        rmse = np.sqrt(np.mean(((self.test_predictions- self.y_test)**2)))
+        if valid is None or preds is None:
+            rmse = np.sqrt(np.mean(((self.test_predictions- self.y_test)**2)))
+        else:
+            rmse = np.sqrt(np.mean(((preds- valid)**2)))
         if self.save_model:
             model_name = 'C:/Users/sweil/OneDrive/Documents/Trading Bots/Machine Learning/LSTMTesting/Models/Model_version_' + str(rmse) + '.h5'
             self.model.save(model_name)
@@ -187,6 +232,7 @@ class NeuralNetwork():
 
     def plot_fit(self):
         h1 = self.history.history
+        #print(h1)
         plt.figure(figsize=(20,6))
         plt.subplot(1,3,1)
         ax = sns.lineplot(y=h1['val_accuracy'], x = range(len(h1['val_accuracy'])),label="val_acc",palette="binary")
@@ -283,6 +329,7 @@ class NeuralNetwork():
         # lookback variable is used to hold how many intervals of time will be used to predict the next interval
         # Create a new dataframe with only the specified output column
         if self.y_column_num == 1:
+            #output_df = self.df_no_index.filter([y_column_name[0]])
             output_df = self.df.filter([y_column_name[0]])
         elif self.y_column_num == 2:
             output_df = self.df.filter([[y_column_name[0], y_column_name[1]]])
